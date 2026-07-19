@@ -1,6 +1,6 @@
 name: Cloud Scraper Routine
 on:
-  workflow_dispatch: # Allows manual trigger click inside the browser panel
+  workflow_dispatch:
 jobs:
   scrape-and-upload:
     runs-on: ubuntu-latest
@@ -21,7 +21,10 @@ jobs:
           BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_TOKEN }}
           COOKIE_NAME: ${{ secrets.COOKIE_NAME }}
           COOKIE_VALUE: ${{ secrets.COOKIE_VALUE }}
-          GD_CLIENT_EMAIL: ${{ secrets.GD_CLIENT_EMAIL }}
-          GD_PRIVATE_KEY: ${{ secrets.GD_PRIVATE_KEY }}
-          GD_FOLDER_ID: ${{ secrets.GD_FOLDER_ID }}
         run: node index.js
+
+      - name: Upload Scraped HTML Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-qna-file
+          path: All_Years_Complete_Offline_QnA.html
