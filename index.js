@@ -30,9 +30,9 @@ async function uploadToDrive(fileName, fileContent) {
 
 async function runCloudScraper() {
     console.log("Launching headless browser on cloud servers...");
-    const browser = await puppeteer.connect({
-        browserWSEndpoint: `ws://chrome.browserless.io?token=${process.env.BROWSERLESS_TOKEN}`
-    });
+   const browser = await puppeteer.connect({
+    browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}`
+});
 
     const page = await browser.newPage();
 
