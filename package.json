@@ -1,0 +1,8 @@
+{
+  "name": "cloud-scraper",
+  "version": "1.0.0",
+  "dependencies": {
+    "puppeteer-core": "^22.0.0",
+    "googleapis": "^126.0.0"
+  }
+}
