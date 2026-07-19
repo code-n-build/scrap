@@ -1,0 +1,27 @@
+name: Cloud Scraper Routine
+on:
+  workflow_dispatch: # Allows manual trigger click inside the browser panel
+jobs:
+  scrape-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Cloud Core Dependencies
+        run: npm install
+
+      - name: Run Script Pipeline Execution
+        env:
+          BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_TOKEN }}
+          COOKIE_NAME: ${{ secrets.COOKIE_NAME }}
+          COOKIE_VALUE: ${{ secrets.COOKIE_VALUE }}
+          GD_CLIENT_EMAIL: ${{ secrets.GD_CLIENT_EMAIL }}
+          GD_PRIVATE_KEY: ${{ secrets.GD_PRIVATE_KEY }}
+          GD_FOLDER_ID: ${{ secrets.GD_FOLDER_ID }}
+        run: node index.js
