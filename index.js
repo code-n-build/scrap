@@ -1,38 +1,11 @@
 const puppeteer = require('puppeteer-core');
-const { google } = require('googleapis');
 const fs = require('fs');
-
-// Initialize Google Drive Client via credentials
-const auth = new google.auth.JWT(
-    process.env.GD_CLIENT_EMAIL,
-    null,
-    process.env.GD_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    ['https://www.googleapis.com/auth/drive']
-);
-const drive = google.drive({ version: 'v3', auth });
-
-async function uploadToDrive(fileName, fileContent) {
-    const fileMetadata = {
-        name: fileName,
-        parents: [process.env.GD_FOLDER_ID] // Destination Shared Folder ID
-    };
-    const media = {
-        mimeType: 'text/html',
-        body: fileContent
-    };
-    const response = await drive.files.create({
-        resource: fileMetadata,
-        media: media,
-        fields: 'id'
-    });
-    console.log('File successfully deposited into Google Drive! File ID:', response.data.id);
-}
 
 async function runCloudScraper() {
     console.log("Launching headless browser on cloud servers...");
-   const browser = await puppeteer.connect({
-    browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}`
-});
+    const browser = await puppeteer.connect({
+        browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}`
+    });
 
     const page = await browser.newPage();
 
@@ -43,7 +16,7 @@ async function runCloudScraper() {
         domain: 'hamrocsit.com'
     });
 
-    // Replace this with the specific entry-point link you want to start scraping from
+    // Target scraping entry-point URL
     await page.goto('https://hamrocsit.com/'); 
 
     console.log("Injecting master scraping algorithm into window context...");
@@ -137,8 +110,9 @@ async function runCloudScraper() {
         // --- YOUR EXACT INNER FUNCTION LOGIC ENDS HERE ---
     });
 
-    console.log("Scraping engine completed tasks. Transferring compiled files directly to Google Drive...");
-    await uploadToDrive('All_Years_Complete_Offline_QnA.html', offlineHtml);
+    console.log("Saving compiled file locally to runner disk...");
+    fs.writeFileSync('All_Years_Complete_Offline_QnA.html', offlineHtml);
+    console.log("File write operation complete!");
     
     await browser.close();
 }
