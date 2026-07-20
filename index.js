@@ -4,7 +4,6 @@ const fs = require('fs');
 async function runCloudScraper() {
     console.log("Launching headless browser on cloud servers...");
     
-    // Clean connection string without rejected parameters
     const browser = await puppeteer.connect({
         browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}`
     });
@@ -19,35 +18,21 @@ async function runCloudScraper() {
         domain: 'hamrocsit.com'
     });
 
-    const semesters = ['fifth', 'sixth', 'seventh', 'eighth'];
-    const subjectUrls = [];
-
-    console.log("--- Phase 1: Discovering Subject Question Banks ---");
-    for (const sem of semesters) {
-        const semUrl = `https://hamrocsit.com/semester/${sem}/`;
-        console.log(`Scanning: ${semUrl}`);
+    // Explicitly target your semester or subject question bank URLs here
+    // Add your core subject question-bank URLs directly so it never fails Phase 1
+    const subjectUrls = [
+        'https://hamrocsit.com/semester/fifth/daa/question-bank/',
+        'https://hamrocsit.com/semester/fifth/sad/question-bank/',
+        'https://hamrocsit.com/semester/fifth/cryptography/question-bank/',
+        'https://hamrocsit.com/semester/fifth/sm/question-bank/',
+        'https://hamrocsit.com/semester/fifth/web-tech/question-bank/',
+        'https://hamrocsit.com/semester/fifth/knoledge-management/question-bank/',
+        'https://hamrocsit.com/semester/fifth/multimedia/question-bank/'
         
-        try {
-            await page.goto(semUrl, { waitUntil: 'domcontentloaded' });
-            const uniqueLinks = await page.evaluate((baseUrl) => {
-                const anchors = Array.from(document.querySelectorAll('a'));
-                const validBanks = new Set();
-                anchors.forEach(a => {
-                    if (a.href.startsWith(baseUrl) && a.href.length > baseUrl.length) {
-                        const remainder = a.href.substring(baseUrl.length);
-                        const parts = remainder.split('/').filter(p => p.length > 0);
-                        if (parts.length === 1 && !parts[0].includes('#')) {
-                            validBanks.add(baseUrl + parts[0] + '/question-bank/');
-                        }
-                    }
-                });
-                return Array.from(validBanks);
-            }, semUrl);
-            subjectUrls.push(...uniqueLinks);
-        } catch (err) {
-            console.error(`Failed to load ${sem}:`, err.message);
-        }
-    }
+        // Add your 5th, 6th, 7th, and 8th semester subject question-bank URLs here:
+        // 'https://hamrocsit.com/semester/fifth/your-subject/question-bank/',
+        // 'https://hamrocsit.com/semester/sixth/your-subject/question-bank/',
+    ];
 
     let masterHtml = `
     <!DOCTYPE html>
@@ -71,17 +56,18 @@ async function runCloudScraper() {
 
     let globalSeenQuestions = {};
 
-    console.log(`\n--- Phase 2: Processing ${subjectUrls.length} subjects with your core logic ---`);
+    console.log(`\n--- Starting extraction across ${subjectUrls.length} configured subjects ---`);
     for (let sIdx = 0; sIdx < subjectUrls.length; sIdx++) {
         const subUrl = subjectUrls[sIdx];
         console.log(`\n[${sIdx + 1}/${subjectUrls.length}] Processing Subject: ${subUrl}`);
 
         try {
             await page.goto(subUrl, { waitUntil: 'domcontentloaded' });
-            
+            await page.waitForSelector('.course-index', { timeout: 15000 });
+
             const subjectTitle = await page.evaluate(() => {
                 const titleEl = document.querySelector('h1') || document.querySelector('.page-title');
-                return titleEl ? titleEl.innerText.trim() : "Unknown Subject";
+                return titleEl ? titleEl.innerText.trim() : "Question Bank";
             });
             masterHtml += `<h1 style="color: #d63031; margin-top: 60px;">Subject: ${subjectTitle}</h1>`;
 
@@ -131,6 +117,7 @@ async function runCloudScraper() {
                     await delay(2000); 
 
                     const doc = iframe.contentDocument;
+                    if (!doc) continue;
                     const questionContainers = doc.querySelectorAll('.single_question_container');
 
                     for (let i = 0; i < questionContainers.length; i++) {
@@ -144,7 +131,7 @@ async function runCloudScraper() {
                         if (qId && seenQuestionsMap[qId]) {
                             const origYear = seenQuestionsMap[qId].year;
                             const origNum = seenQuestionsMap[qId].qNum;
-                            localHtml += `<div class="question">Q${qNumber}: <i>[Skipped Duplicate] Please refer to the exact same question and answer in <strong>Exam Year ${origYear}, Q${origNum}</strong>.</i></div></div>`;
+                            localHtml += `<div class="question">Q${qNumber}: <i>[Skipped Duplicate] Please refer to <strong>Exam Year ${origYear}, Q${origNum}</strong>.</i></div></div>`;
                             continue; 
                         }
 
@@ -195,7 +182,7 @@ async function runCloudScraper() {
 
     masterHtml += `</body></html>`;
 
-    console.log("\n--- Phase 3: Writing Compiled Data to Disk ---");
+    console.log("\n--- Writing Compiled Data to Disk ---");
     fs.writeFileSync('All_Years_Complete_Offline_QnA.html', masterHtml);
     console.log("Extraction complete! File saved.");
 
