@@ -1,21 +1,16 @@
 const puppeteer = require('puppeteer-core');
 const fs = require('fs');
 
-const delay = ms => new Promise(res => setTimeout(res, ms));
-
 async function runCloudScraper() {
     console.log("Launching headless browser on cloud servers...");
     
-    // Upgrade 1: Authorize a 2-Hour Maximum Timeout (7200000 ms) for massive data extraction
+    // Clean connection string without rejected parameters
     const browser = await puppeteer.connect({
-        browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}&timeout=7200000`
+        browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}`
     });
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
-    
-    // Set navigation timeout to 2 minutes, ignore slow ad-trackers
-    page.setDefaultNavigationTimeout(120000); 
 
     // Inject logged-in session cookies
     await page.setCookie({
@@ -30,49 +25,40 @@ async function runCloudScraper() {
     console.log("--- Phase 1: Discovering Subject Question Banks ---");
     for (const sem of semesters) {
         const semUrl = `https://hamrocsit.com/semester/${sem}/`;
-        console.log(`Scanning semester landing page: ${semUrl}`);
+        console.log(`Scanning: ${semUrl}`);
         
         try {
             await page.goto(semUrl, { waitUntil: 'domcontentloaded' });
-            
             const uniqueLinks = await page.evaluate((baseUrl) => {
                 const anchors = Array.from(document.querySelectorAll('a'));
-                const validSubjectBanks = new Set();
-                
+                const validBanks = new Set();
                 anchors.forEach(a => {
                     if (a.href.startsWith(baseUrl) && a.href.length > baseUrl.length) {
                         const remainder = a.href.substring(baseUrl.length);
                         const parts = remainder.split('/').filter(p => p.length > 0);
-                        
-                        // Upgrade 2: Filter out broken # anchor links
                         if (parts.length === 1 && !parts[0].includes('#')) {
-                            validSubjectBanks.add(baseUrl + parts[0] + '/question-bank/');
+                            validBanks.add(baseUrl + parts[0] + '/question-bank/');
                         }
                     }
                 });
-                return Array.from(validSubjectBanks);
+                return Array.from(validBanks);
             }, semUrl);
-
-            console.log(`Found ${uniqueLinks.length} valid subject(s) for ${sem} semester.`);
             subjectUrls.push(...uniqueLinks);
         } catch (err) {
-            console.error(`Failed to load semester ${sem}:`, err.message);
+            console.error(`Failed to load ${sem}:`, err.message);
         }
     }
-
-    console.log(`\nTotal Subjects Found Across Semesters: ${subjectUrls.length}`);
 
     let masterHtml = `
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>HamroCSIT Question Bank (Semesters 5-8)</title>
+        <title>Comprehensive Question Bank - Semesters 5 to 8</title>
         <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 900px; margin: 20px auto; padding: 20px; color: #333; }
             h1 { text-align: center; border-bottom: 3px solid #0366d6; padding-bottom: 10px; }
-            h2 { color: #0366d6; margin-top: 40px; border-bottom: 2px solid #0366d6; padding-bottom: 5px; }
-            h3 { color: #555; margin-top: 25px; border-bottom: 1px solid #ccc; padding-bottom: 3px; }
+            h2 { color: #0366d6; margin-top: 40px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
             .qa-block { border: 1px solid #ddd; padding: 20px; margin-bottom: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
             .question { font-weight: bold; font-size: 1.1em; margin-bottom: 15px; border-bottom: 2px solid #555; padding-bottom: 10px; }
             .answer { background-color: #f9f9f9; padding: 15px; border-left: 4px solid #0d6efd; }
@@ -80,103 +66,89 @@ async function runCloudScraper() {
         </style>
     </head>
     <body>
-        <h1>HamroCSIT Comprehensive Question Bank (Semesters 5 to 8)</h1>
+        <h1>Comprehensive Question Bank (Sem 5 - 8)</h1>
     `;
 
-    const seenQuestions = {};
+    let globalSeenQuestions = {};
 
-    console.log("\n--- Phase 2: Extracting Questions and Answers ---");
+    console.log(`\n--- Phase 2: Processing ${subjectUrls.length} subjects with your core logic ---`);
     for (let sIdx = 0; sIdx < subjectUrls.length; sIdx++) {
         const subUrl = subjectUrls[sIdx];
-        console.log(`\n[Subject ${sIdx + 1}/${subjectUrls.length}] Opening: ${subUrl}`);
+        console.log(`\n[${sIdx + 1}/${subjectUrls.length}] Processing Subject: ${subUrl}`);
 
         try {
             await page.goto(subUrl, { waitUntil: 'domcontentloaded' });
-            await delay(2000);
-
-            const subjectData = await page.evaluate(() => {
+            
+            const subjectTitle = await page.evaluate(() => {
                 const titleEl = document.querySelector('h1') || document.querySelector('.page-title');
-                const title = titleEl ? titleEl.innerText.trim() : "Subject Question Bank";
+                return titleEl ? titleEl.innerText.trim() : "Unknown Subject";
+            });
+            masterHtml += `<h1 style="color: #d63031; margin-top: 60px;">Subject: ${subjectTitle}</h1>`;
+
+            const subjectResult = await page.evaluate(async (seenQuestionsMap) => {
+                const delay = ms => new Promise(res => setTimeout(res, ms));
+                
+                async function getBase64ImageFromUrl(imageUrl) {
+                    try {
+                        const response = await fetch(imageUrl);
+                        const blob = await response.blob();
+                        return new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(blob);
+                        });
+                    } catch (error) { return imageUrl; }
+                }
+
+                async function processImagesInElement(element) {
+                    const images = element.querySelectorAll('img');
+                    for (let img of images) {
+                        const originalSrc = img.src || img.getAttribute('src');
+                        if (originalSrc && !originalSrc.startsWith('data:')) {
+                            img.src = await getBase64ImageFromUrl(originalSrc);
+                            img.removeAttribute('srcset'); 
+                            img.removeAttribute('fetchpriority');
+                            img.removeAttribute('decoding');
+                        }
+                    }
+                }
 
                 const sidebar = document.querySelector('.course-index');
-                if (!sidebar) return { title, yearLinks: [] };
+                if (!sidebar) return { html: "<p>No exam years found for this subject.</p>", updatedMap: seenQuestionsMap };
 
-                const yearLinks = Array.from(sidebar.querySelectorAll('a')).map(a => ({
-                    name: a.innerText.trim(),
-                    url: a.href
-                }));
+                const links = Array.from(sidebar.querySelectorAll('a')).map(a => ({ name: a.innerText.trim(), url: a.href }));
+                
+                let localHtml = '';
+                const iframe = document.createElement('iframe');
+                iframe.style.cssText = "width: 1200px; height: 800px; position: fixed; top: 0; left: -10000px; z-index: -9999;";
+                document.body.appendChild(iframe);
 
-                return { title, yearLinks };
-            });
+                for (const link of links) {
+                    localHtml += `<h2>Exam Year: ${link.name}</h2>`;
 
-            masterHtml += `<h2>Subject: ${subjectData.title}</h2>`;
+                    await new Promise(resolve => { iframe.onload = resolve; iframe.src = link.url; });
+                    await delay(2000); 
 
-            if (subjectData.yearLinks.length === 0) {
-                console.log(`No year sidebar links found for ${subjectData.title}. Scraping current view directly...`);
-                subjectData.yearLinks.push({ name: 'Default', url: subUrl });
-            }
+                    const doc = iframe.contentDocument;
+                    const questionContainers = doc.querySelectorAll('.single_question_container');
 
-            for (const yearLink of subjectData.yearLinks) {
-                console.log(`Processing Year: ${yearLink.name} (${yearLink.url})`);
-                masterHtml += `<h3>Exam Year: ${yearLink.name}</h3>`;
-
-                await page.goto(yearLink.url, { waitUntil: 'domcontentloaded' });
-                await delay(2000);
-
-                // Upgrade 3: Grab total question count, then loop them sequentially from Node to keep websocket alive!
-                const qCount = await page.evaluate(() => document.querySelectorAll('.single_question_container').length);
-                console.log(`Found ${qCount} questions in this year. Processing sequentially...`);
-
-                for (let i = 0; i < qCount; i++) {
-                    const qResult = await page.evaluate(async (idx, yearName, currentSeen) => {
-                        const delayInPage = ms => new Promise(res => setTimeout(res, ms));
-
-                        async function getBase64ImageFromUrl(imageUrl) {
-                            try {
-                                const response = await fetch(imageUrl);
-                                const blob = await response.blob();
-                                return new Promise((resolve, reject) => {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => resolve(reader.result);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(blob);
-                                });
-                            } catch (e) { return imageUrl; }
-                        }
-
-                        async function processImagesInElement(element) {
-                            const images = element.querySelectorAll('img');
-                            for (let img of images) {
-                                const originalSrc = img.src || img.getAttribute('src');
-                                if (originalSrc && !originalSrc.startsWith('data:')) {
-                                    img.src = await getBase64ImageFromUrl(originalSrc);
-                                    img.removeAttribute('srcset');
-                                    img.removeAttribute('fetchpriority');
-                                    img.removeAttribute('decoding');
-                                }
-                            }
-                        }
-
-                        let localHtml = '';
-                        const container = document.querySelectorAll('.single_question_container')[idx];
-                        if (!container) return { html: '', newSeen: null };
-
+                    for (let i = 0; i < questionContainers.length; i++) {
+                        const container = questionContainers[i];
                         const qId = container.getAttribute('data-id');
                         const qNumberElement = container.querySelector('.qnbank_number');
-                        const qNumber = qNumberElement ? qNumberElement.innerText.trim() : (idx + 1);
+                        const qNumber = qNumberElement ? qNumberElement.innerText.trim() : (i + 1);
 
                         localHtml += `<div class="qa-block">`;
 
-                        // Smart Duplicate Skip
-                        if (qId && currentSeen[qId]) {
-                            const origYear = currentSeen[qId].year;
-                            const origNum = currentSeen[qId].qNum;
-                            localHtml += `<div class="question">Q${qNumber}: <i>[Skipped Duplicate] Refer to <strong>${origYear}, Q${origNum}</strong>.</i></div></div>`;
-                            return { html: localHtml, newSeen: null }; // Returns immediately!
+                        if (qId && seenQuestionsMap[qId]) {
+                            const origYear = seenQuestionsMap[qId].year;
+                            const origNum = seenQuestionsMap[qId].qNum;
+                            localHtml += `<div class="question">Q${qNumber}: <i>[Skipped Duplicate] Please refer to the exact same question and answer in <strong>Exam Year ${origYear}, Q${origNum}</strong>.</i></div></div>`;
+                            continue; 
                         }
 
-                        let newlySeen = null;
-                        if (qId) newlySeen = { id: qId, year: yearName, qNum: qNumber };
+                        if (qId) seenQuestionsMap[qId] = { year: link.name, qNum: qNumber };
 
                         const qContentElement = container.querySelector('.qnbank_content');
                         if (qContentElement) {
@@ -191,9 +163,8 @@ async function runCloudScraper() {
                         const answerButton = container.querySelector('.has_answer_tick i');
                         if (answerButton) {
                             answerButton.click();
-                            await delayInPage(2000); // Wait for modal fetch
-
-                            const popupContent = document.querySelector('#modal-content-content');
+                            await delay(2000);
+                            const popupContent = doc.querySelector('#modal-content-content');
                             if (popupContent) {
                                 const tempADiv = document.createElement('div');
                                 tempADiv.innerHTML = popupContent.innerHTML;
@@ -202,28 +173,21 @@ async function runCloudScraper() {
                             } else {
                                 localHtml += `<div class="answer"><p><i>Answer content not found.</i></p></div>`;
                             }
-
-                            const closeButton = document.querySelector('.btn-close');
-                            if (closeButton) {
-                                closeButton.click();
-                                await delayInPage(1000); // Wait for close animation
-                            }
+                            const closeButton = doc.querySelector('.btn-close');
+                            if (closeButton) { closeButton.click(); await delay(1000); }
                         } else {
                             localHtml += `<div class="answer"><p><i>No answer available.</i></p></div>`;
                         }
-
                         localHtml += `</div>`;
-                        return { html: localHtml, newSeen: newlySeen };
-
-                    }, i, yearLink.name, seenQuestions);
-
-                    // Add HTML block and register duplicates
-                    masterHtml += qResult.html;
-                    if (qResult.newSeen) {
-                        seenQuestions[qResult.newSeen.id] = { year: qResult.newSeen.year, qNum: qResult.newSeen.qNum };
                     }
                 }
-            }
+                document.body.removeChild(iframe);
+                return { html: localHtml, updatedMap: seenQuestionsMap };
+            }, globalSeenQuestions);
+
+            masterHtml += subjectResult.html;
+            globalSeenQuestions = subjectResult.updatedMap;
+
         } catch (subErr) {
             console.error(`Error processing subject ${subUrl}:`, subErr.message);
         }
@@ -233,7 +197,7 @@ async function runCloudScraper() {
 
     console.log("\n--- Phase 3: Writing Compiled Data to Disk ---");
     fs.writeFileSync('All_Years_Complete_Offline_QnA.html', masterHtml);
-    console.log("File write operation complete: All_Years_Complete_Offline_QnA.html");
+    console.log("Extraction complete! File saved.");
 
     await browser.close();
 }
