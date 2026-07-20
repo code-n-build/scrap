@@ -30,16 +30,27 @@ async function runCloudScraper() {
         try {
             await page.goto(semUrl, { waitUntil: 'networkidle2', timeout: 30000 });
             
-            // Extract all subject question-bank URLs from the semester page
-            const links = await page.evaluate(() => {
+            // Extract subject links dynamically by checking URL structures
+            const uniqueLinks = await page.evaluate((baseUrl) => {
                 const anchors = Array.from(document.querySelectorAll('a'));
-                return anchors
-                    .map(a => a.href)
-                    .filter(href => href && href.includes('/question-bank'));
-            });
+                const validSubjectBanks = new Set();
+                
+                anchors.forEach(a => {
+                    // Check if the link branches directly off the current semester URL
+                    if (a.href.startsWith(baseUrl) && a.href.length > baseUrl.length) {
+                        const remainder = a.href.substring(baseUrl.length);
+                        const parts = remainder.split('/').filter(p => p.length > 0);
+                        
+                        // If it's a direct subject link (e.g., exactly 'daa' or 'toc' without deeper paths)
+                        if (parts.length === 1) {
+                            // Construct and add the explicit question bank URL
+                            validSubjectBanks.add(baseUrl + parts[0] + '/question-bank/');
+                        }
+                    }
+                });
+                return Array.from(validSubjectBanks);
+            }, semUrl);
 
-            // De-duplicate URLs
-            const uniqueLinks = [...new Set(links)];
             console.log(`Found ${uniqueLinks.length} subject question bank(s) for ${sem} semester.`);
             subjectUrls.push(...uniqueLinks);
         } catch (err) {
@@ -206,7 +217,6 @@ async function runCloudScraper() {
                     return { localHtml, updatedSeenMap: seenQMap };
                 }, yearLink.name, seenQuestions);
 
-                // Merge duplicate tracking map and append extracted HTML
                 Object.assign(seenQuestions, yearHtmlContent.updatedSeenMap);
                 masterHtml += yearHtmlContent.localHtml;
             }
