@@ -5,12 +5,17 @@ const delay = ms => new Promise(res => setTimeout(res, ms));
 
 async function runCloudScraper() {
     console.log("Launching headless browser on cloud servers...");
+    
+    // Upgrade 1: Authorize a 2-Hour Maximum Timeout (7200000 ms) for massive data extraction
     const browser = await puppeteer.connect({
-        browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}`
+        browserWSEndpoint: `wss://production-lon.browserless.io?token=${process.env.BROWSERLESS_TOKEN}&timeout=7200000`
     });
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
+    
+    // Set navigation timeout to 2 minutes, ignore slow ad-trackers
+    page.setDefaultNavigationTimeout(120000); 
 
     // Inject logged-in session cookies
     await page.setCookie({
@@ -28,22 +33,19 @@ async function runCloudScraper() {
         console.log(`Scanning semester landing page: ${semUrl}`);
         
         try {
-            await page.goto(semUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+            await page.goto(semUrl, { waitUntil: 'domcontentloaded' });
             
-            // Extract subject links dynamically by checking URL structures
             const uniqueLinks = await page.evaluate((baseUrl) => {
                 const anchors = Array.from(document.querySelectorAll('a'));
                 const validSubjectBanks = new Set();
                 
                 anchors.forEach(a => {
-                    // Check if the link branches directly off the current semester URL
                     if (a.href.startsWith(baseUrl) && a.href.length > baseUrl.length) {
                         const remainder = a.href.substring(baseUrl.length);
                         const parts = remainder.split('/').filter(p => p.length > 0);
                         
-                        // If it's a direct subject link (e.g., exactly 'daa' or 'toc' without deeper paths)
-                        if (parts.length === 1) {
-                            // Construct and add the explicit question bank URL
+                        // Upgrade 2: Filter out broken # anchor links
+                        if (parts.length === 1 && !parts[0].includes('#')) {
                             validSubjectBanks.add(baseUrl + parts[0] + '/question-bank/');
                         }
                     }
@@ -51,7 +53,7 @@ async function runCloudScraper() {
                 return Array.from(validSubjectBanks);
             }, semUrl);
 
-            console.log(`Found ${uniqueLinks.length} subject question bank(s) for ${sem} semester.`);
+            console.log(`Found ${uniqueLinks.length} valid subject(s) for ${sem} semester.`);
             subjectUrls.push(...uniqueLinks);
         } catch (err) {
             console.error(`Failed to load semester ${sem}:`, err.message);
@@ -60,7 +62,6 @@ async function runCloudScraper() {
 
     console.log(`\nTotal Subjects Found Across Semesters: ${subjectUrls.length}`);
 
-    // Master HTML Shell Setup
     let masterHtml = `
     <!DOCTYPE html>
     <html>
@@ -90,10 +91,9 @@ async function runCloudScraper() {
         console.log(`\n[Subject ${sIdx + 1}/${subjectUrls.length}] Opening: ${subUrl}`);
 
         try {
-            await page.goto(subUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+            await page.goto(subUrl, { waitUntil: 'domcontentloaded' });
             await delay(2000);
 
-            // Extract subject name and year sidebar links
             const subjectData = await page.evaluate(() => {
                 const titleEl = document.querySelector('h1') || document.querySelector('.page-title');
                 const title = titleEl ? titleEl.innerText.trim() : "Subject Question Bank";
@@ -113,7 +113,6 @@ async function runCloudScraper() {
 
             if (subjectData.yearLinks.length === 0) {
                 console.log(`No year sidebar links found for ${subjectData.title}. Scraping current view directly...`);
-                // Fallback to process current view if no sidebar years present
                 subjectData.yearLinks.push({ name: 'Default', url: subUrl });
             }
 
@@ -121,76 +120,78 @@ async function runCloudScraper() {
                 console.log(`Processing Year: ${yearLink.name} (${yearLink.url})`);
                 masterHtml += `<h3>Exam Year: ${yearLink.name}</h3>`;
 
-                await page.goto(yearLink.url, { waitUntil: 'networkidle2', timeout: 30000 });
+                await page.goto(yearLink.url, { waitUntil: 'domcontentloaded' });
                 await delay(2000);
 
-                // Run master extraction script in page context
-                const yearHtmlContent = await page.evaluate(async (yearName, seenQMap) => {
-                    const delayInPage = ms => new Promise(res => setTimeout(res, ms));
+                // Upgrade 3: Grab total question count, then loop them sequentially from Node to keep websocket alive!
+                const qCount = await page.evaluate(() => document.querySelectorAll('.single_question_container').length);
+                console.log(`Found ${qCount} questions in this year. Processing sequentially...`);
 
-                    async function getBase64ImageFromUrl(imageUrl) {
-                        try {
-                            const response = await fetch(imageUrl);
-                            const blob = await response.blob();
-                            return new Promise((resolve, reject) => {
-                                const reader = new FileReader();
-                                reader.onloadend = () => resolve(reader.result);
-                                reader.onerror = reject;
-                                reader.readAsDataURL(blob);
-                            });
-                        } catch (e) { return imageUrl; }
-                    }
+                for (let i = 0; i < qCount; i++) {
+                    const qResult = await page.evaluate(async (idx, yearName, currentSeen) => {
+                        const delayInPage = ms => new Promise(res => setTimeout(res, ms));
 
-                    async function processImagesInElement(element) {
-                        const images = element.querySelectorAll('img');
-                        for (let img of images) {
-                            const originalSrc = img.src || img.getAttribute('src');
-                            if (originalSrc && !originalSrc.startsWith('data:')) {
-                                img.src = await getBase64ImageFromUrl(originalSrc);
-                                img.removeAttribute('srcset');
-                                img.removeAttribute('fetchpriority');
-                                img.removeAttribute('decoding');
+                        async function getBase64ImageFromUrl(imageUrl) {
+                            try {
+                                const response = await fetch(imageUrl);
+                                const blob = await response.blob();
+                                return new Promise((resolve, reject) => {
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => resolve(reader.result);
+                                    reader.onerror = reject;
+                                    reader.readAsDataURL(blob);
+                                });
+                            } catch (e) { return imageUrl; }
+                        }
+
+                        async function processImagesInElement(element) {
+                            const images = element.querySelectorAll('img');
+                            for (let img of images) {
+                                const originalSrc = img.src || img.getAttribute('src');
+                                if (originalSrc && !originalSrc.startsWith('data:')) {
+                                    img.src = await getBase64ImageFromUrl(originalSrc);
+                                    img.removeAttribute('srcset');
+                                    img.removeAttribute('fetchpriority');
+                                    img.removeAttribute('decoding');
+                                }
                             }
                         }
-                    }
 
-                    let localHtml = '';
-                    const questionContainers = document.querySelectorAll('.single_question_container');
+                        let localHtml = '';
+                        const container = document.querySelectorAll('.single_question_container')[idx];
+                        if (!container) return { html: '', newSeen: null };
 
-                    for (let i = 0; i < questionContainers.length; i++) {
-                        const container = questionContainers[i];
                         const qId = container.getAttribute('data-id');
                         const qNumberElement = container.querySelector('.qnbank_number');
-                        const qNumber = qNumberElement ? qNumberElement.innerText.trim() : (i + 1);
+                        const qNumber = qNumberElement ? qNumberElement.innerText.trim() : (idx + 1);
 
                         localHtml += `<div class="qa-block">`;
 
-                        if (qId && seenQMap[qId]) {
-                            const origYear = seenQMap[qId].year;
-                            const origNum = seenQMap[qId].qNum;
+                        // Smart Duplicate Skip
+                        if (qId && currentSeen[qId]) {
+                            const origYear = currentSeen[qId].year;
+                            const origNum = currentSeen[qId].qNum;
                             localHtml += `<div class="question">Q${qNumber}: <i>[Skipped Duplicate] Refer to <strong>${origYear}, Q${origNum}</strong>.</i></div></div>`;
-                            continue;
+                            return { html: localHtml, newSeen: null }; // Returns immediately!
                         }
 
-                        if (qId) {
-                            seenQMap[qId] = { year: yearName, qNum: qNumber };
-                        }
+                        let newlySeen = null;
+                        if (qId) newlySeen = { id: qId, year: yearName, qNum: qNumber };
 
                         const qContentElement = container.querySelector('.qnbank_content');
-                        let qContentHtml = '';
                         if (qContentElement) {
                             const tempQDiv = document.createElement('div');
                             tempQDiv.innerHTML = qContentElement.innerHTML;
                             await processImagesInElement(tempQDiv);
-                            qContentHtml = tempQDiv.innerHTML;
+                            localHtml += `<div class="question">Q${qNumber}: ${tempQDiv.innerHTML}</div>`;
+                        } else {
+                            localHtml += `<div class="question">Q${qNumber}: </div>`;
                         }
-
-                        localHtml += `<div class="question">Q${qNumber}: ${qContentHtml}</div>`;
 
                         const answerButton = container.querySelector('.has_answer_tick i');
                         if (answerButton) {
                             answerButton.click();
-                            await delayInPage(2000);
+                            await delayInPage(2000); // Wait for modal fetch
 
                             const popupContent = document.querySelector('#modal-content-content');
                             if (popupContent) {
@@ -205,20 +206,23 @@ async function runCloudScraper() {
                             const closeButton = document.querySelector('.btn-close');
                             if (closeButton) {
                                 closeButton.click();
-                                await delayInPage(1000);
+                                await delayInPage(1000); // Wait for close animation
                             }
                         } else {
                             localHtml += `<div class="answer"><p><i>No answer available.</i></p></div>`;
                         }
 
                         localHtml += `</div>`;
+                        return { html: localHtml, newSeen: newlySeen };
+
+                    }, i, yearLink.name, seenQuestions);
+
+                    // Add HTML block and register duplicates
+                    masterHtml += qResult.html;
+                    if (qResult.newSeen) {
+                        seenQuestions[qResult.newSeen.id] = { year: qResult.newSeen.year, qNum: qResult.newSeen.qNum };
                     }
-
-                    return { localHtml, updatedSeenMap: seenQMap };
-                }, yearLink.name, seenQuestions);
-
-                Object.assign(seenQuestions, yearHtmlContent.updatedSeenMap);
-                masterHtml += yearHtmlContent.localHtml;
+                }
             }
         } catch (subErr) {
             console.error(`Error processing subject ${subUrl}:`, subErr.message);
